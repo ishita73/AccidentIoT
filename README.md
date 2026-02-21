@@ -42,3 +42,15 @@ A compact IoT project using **ESP32**, **MPU6050**, **GPS**, and **Piezo sensor*
 <img width="500" height="500" alt="image" src="https://github.com/user-attachments/assets/fc6608b9-73db-4ae1-88b8-f4aab9f4d7e8" />
 
 <img width="600" height="600" alt="MOSFET" src="https://github.com/user-attachments/assets/7bf03624-39d5-435e-bf6e-73b8a9550ae6" />
+
+
+
+# VERSION 2:
+
+<img width="3000" height="1350" alt="image" src="https://github.com/user-attachments/assets/bfa911a2-ca79-457f-a5c7-a8aacc752c2a" />
+
+
+<img width="1178" height="395" alt="image" src="https://github.com/user-attachments/assets/e7b9b8a2-8e9a-40e8-91c6-8a49a4513e1d" />
+
+
+<img width="977" height="538" alt="image" src="https://github.com/user-attachments/assets/a6ecff5e-60b0-46a1-a9df-a04577d39ecd" />
