@@ -63,3 +63,6 @@ A compact IoT project using **ESP32**, **MPU6050**, **GPS**, and **Piezo sensor*
 <img width="358" height="431" alt="image" src="https://github.com/user-attachments/assets/4fd3b98b-d381-499b-8f7a-25cc4e231b42" />
 
 
+### VEHICLE UNIT:
+
+
