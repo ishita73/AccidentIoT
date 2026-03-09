@@ -11,7 +11,7 @@ A compact IoT project using **ESP32**, **MPU6050**, **GPS**, and **Piezo sensor*
 | **NEO-6M GPS** | TX → 16 (RX2), RX → 17 (TX2) | Location & speed |
 | **Piezo Sensor** | Signal → 34 | Detects seat vibration / presence |
 | **Buzzer** | + → 18 | Sounds alarm |
-| **IRFZ44N MOSFET + LED** | Gate → 23 | Simulates fuel cutoff |
+| **IRFZ44N MOSFET + LED** | Gate → 23 | Simulates fuel cutoff | 
 | **ESP32** | USB | Main controller & data processor |
 
 ---
