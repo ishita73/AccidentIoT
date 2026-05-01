@@ -65,4 +65,24 @@ A compact IoT project using **ESP32**, **MPU6050**, **GPS**, and **Piezo sensor*
 
 ### VEHICLE UNIT:
 
+---
+## Working
+The system consists of a wearable unit and a vehicle-mounted unit. Sensors like MPU6050, ADXL345, and piezo sensors capture motion and impact data. This data is processed using ESP32/Arduino to detect crash events and estimate severity. If a critical event is detected, GPS location is sent via alerts and a fuel cutoff mechanism is triggered.
 
+## Tech Stack
+- ESP32 / Arduino
+- MPU6050, ADXL345, GPS, Piezo Sensors
+- Embedded C++
+
+## How to Run
+1. Connect sensors to ESP32/Arduino
+2. Upload the firmware code
+3. Power the system
+4. Monitor output via serial console or alert system
+
+## Future Improvements
+- Cloud-based alert system
+- Mobile app integration
+- Improved crash classification models
+
+Contributions are welcome! Feel free to open issues or submit pull requests to improve the project.
