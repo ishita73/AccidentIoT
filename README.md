@@ -64,6 +64,7 @@ A compact IoT project using **ESP32**, **MPU6050**, **GPS**, and **Piezo sensor*
 
 
 ### VEHICLE UNIT:
+<img width="1080" height="601" alt="WhatsApp Image 2026-05-01 at 2 53 38 PM" src="https://github.com/user-attachments/assets/b1b089ba-d245-4061-a7b0-5287b8ce84e9" />
 
 ---
 ## Working
