@@ -1,89 +1,153 @@
 # 🚗 ESP32 Real-Time Accident Detection System
 
-A compact IoT project using **ESP32**, **MPU6050**, **GPS**, and **Piezo sensor** for **real-time crash detection** with automatic **fuel cutoff**, **buzzer alert**, and **Twilio SMS** for alert reporting.
+A compact IoT-based safety system using **ESP32**, **MPU6050**, **ADXL345**, **NEO-6M GPS**, and **Piezo sensor** for real-time crash detection, automatic fuel cutoff, buzzer alert, and SMS notification via Twilio.
 
 ---
 
-## Hardware Setup
+## ⚠️ Hardware Safety Fix (IMPORTANT — Issue #19)
+
+### MOSFET Gate Protection
+
+- The IRFZ44N **must NOT be connected directly to ESP32 GPIO**
+- A **330Ω series resistor** is required between GPIO23 and MOSFET gate
+- A **10kΩ pull-down resistor** is required between gate and GND
+
+### Critical Electrical Limitation
+
+- IRFZ44N is **not a logic-level MOSFET**
+- At **3.3V (ESP32 output)**, it operates in the linear region → overheating risk
+- Recommended replacement:
+  - ✔ IRLZ44N (logic-level)
+  - ✔ AO3400 (efficient low-power switching)
+
+---
+
+## 🔌 Hardware Setup (Vehicle Unit)
+
 | Component | ESP32 Pin / Power | Purpose |
-|------------|------------------|----------|
-| **MPU6050** | SDA → 21, SCL → 22 | Detects acceleration, jerk, tilt |
-| **NEO-6M GPS** | TX → 16 (RX2), RX → 17 (TX2) | Location & speed |
-| **Piezo Sensor** | Signal → 34 | Detects seat vibration / presence |
-| **Buzzer** | + → 18 | Sounds alarm |
-| **IRFZ44N MOSFET + LED** | Gate → 23 | Simulates fuel cutoff | 
-| **ESP32** | USB | Main controller & data processor |
+|---|---|---|
+| MPU6050 | SDA → 21, SCL → 22 | Motion & acceleration sensing |
+| NEO-6M GPS | TX → 16 (RX2), RX → 17 (TX2) | Location tracking |
+| Piezo Sensor | Signal → 34 | Vibration / impact detection |
+| Buzzer | GPIO 18 | Audio crash alert |
+| MOSFET (Fuel Cutoff) | GPIO 23 → 330Ω → Gate | Simulated fuel cutoff |
+| Pull-down resistor | Gate → 10kΩ → GND | Prevents floating gate |
+| ESP32 | USB | Main controller |
 
 ---
 
-## Core Logic
-1. **MPU6050** samples acceleration & rotation at ~200 Hz.  
-2. Removes gravity to extract **pure linear motion**.  
-3. **Piezo plate** confirms driver presence before triggering.  
-4. Accident triggers if:
-   - `a > 2 g`, `jerk > 8 g/s`, or `gyro > 300 °/s`.  
+## 🧠 Core Logic
+
+1. MPU6050 samples motion at ~200 Hz
+2. Gravity is removed → pure linear acceleration extracted
+3. Piezo sensor confirms driver presence
+4. Crash detection triggers when:
+   - Acceleration > 2g
+   - Jerk > 8g/s
+   - Angular velocity > 300°/s
 5. Severity levels:
-   - **Minor:** ≥ 2 g  
-   - **Moderate:** ≥ 3 g  
-   - **Severe:** ≥ 5 g  
-6. On crash → buzzer ON, fuel OFF, SMS.
+   - **Minor:** ≥ 2g
+   - **Moderate:** ≥ 3g
+   - **Severe:** ≥ 5g
+6. On crash: buzzer activates, fuel cutoff triggered, GPS location sent via SMS (Twilio)
 
 ---
 
-## NOVELTY
-- Dual-layer crash validation using motion + seat-presence sensing (piezo sensor) 
-- Physics-based crash modeling using acceleration, jerk, and angular rotation together  
-- Gravity-compensated IMU processing at 200 Hz for true linear acceleration  
-- Actual hardware safety action via **MOSFET-based fuel cutoff simulation**
- 
+## ⚙️ Firmware Architecture (Issue #19 Fix)
+
+### Problem
+
+Running IMU + GPS in a single loop causes GPS serial buffer overflow, missed IMU crash frames, and system latency under high sensor load.
+
+### Solution: FreeRTOS Dual-Core Execution
+
+| Core | Task |
+|---|---|
+| **Core 0** | GPS Task — reads and parses NEO-6M serial data |
+| **Core 1** | IMU + Crash Detection — MPU6050 sampling (200 Hz), piezo monitoring, crash logic |
+
+Implemented using `xTaskCreatePinnedToCore()` — see `version2/vehicle.ino`.
 
 ---
 
-<img width="500" height="500" alt="image" src="https://github.com/user-attachments/assets/fc6608b9-73db-4ae1-88b8-f4aab9f4d7e8" />
+## 🔗 Version 2 Architecture (Multi-Device System)
 
-<img width="600" height="600" alt="MOSFET" src="https://github.com/user-attachments/assets/7bf03624-39d5-435e-bf6e-73b8a9550ae6" />
-
-
-
-# VERSION 2:
-
-<img width="3000" height="1350" alt="image" src="https://github.com/user-attachments/assets/bfa911a2-ca79-457f-a5c7-a8aacc752c2a" />
-
-
-<img width="1178" height="395" alt="image" src="https://github.com/user-attachments/assets/e7b9b8a2-8e9a-40e8-91c6-8a49a4513e1d" />
-
-
-<img width="977" height="538" alt="image" src="https://github.com/user-attachments/assets/a6ecff5e-60b0-46a1-a9df-a04577d39ecd" />
-
-
-### WEARABLE UNIT:
-
-<img width="389" height="490" alt="image" src="https://github.com/user-attachments/assets/9c37a5ca-9808-4d31-94d9-4871f6a2daa6" />
-
-<img width="358" height="431" alt="image" src="https://github.com/user-attachments/assets/4fd3b98b-d381-499b-8f7a-25cc4e231b42" />
-
-
-### VEHICLE UNIT:
-<img width="1080" height="601" alt="WhatsApp Image 2026-05-01 at 2 53 38 PM" src="https://github.com/user-attachments/assets/b1b089ba-d245-4061-a7b0-5287b8ce84e9" />
+| Unit | Sensors | Role |
+|---|---|---|
+| **Wearable** | ADXL345 | Detects rider body impact |
+| **Vehicle** | MPU6050, GPS, Piezo | Detects crash + executes safety actions |
 
 ---
-## Working
-The system consists of a wearable unit and a vehicle-mounted unit. Sensors like MPU6050, ADXL345, and piezo sensors capture motion and impact data. This data is processed using ESP32/Arduino to detect crash events and estimate severity. If a critical event is detected, GPS location is sent via alerts and a fuel cutoff mechanism is triggered.
 
-## Tech Stack
-- ESP32 / Arduino
-- MPU6050, ADXL345, GPS, Piezo Sensors
+## 📡 Communication Protocol (Issue #19 Fix)
+
+- **Protocol:** ESP-NOW (peer-to-peer, no router required, ~1ms latency)
+- **Direction:** Wearable → Vehicle
+
+**Workflow:**
+1. Wearable detects impact via ADXL345
+2. Sends impact packet over ESP-NOW
+3. Vehicle ESP32 receives and cross-verifies with MPU6050 + Piezo
+4. If confirmed → emergency system triggers
+
+> ⚠️ Do **NOT** connect wearable and vehicle via I2C — units are physically separate and communicate wirelessly only.
+
+---
+
+## 🚗 Core Features
+
+- Dual-layer crash detection (vehicle + wearable cross-validation)
+- Physics-based crash modeling (acceleration + jerk + rotation)
+- Gravity-compensated IMU processing at 200 Hz
+- Real-time fuel cutoff simulation via MOSFET
+- GPS-based emergency SMS alert (Twilio)
+- Low-latency wireless communication via ESP-NOW
+
+---
+
+## 🛠️ Tech Stack
+
+- ESP32 (Dual-core FreeRTOS)
 - Embedded C++
+- MPU6050, ADXL345, NEO-6M GPS, Piezo
+- ESP-NOW communication protocol
+- Twilio SMS API
 
-## How to Run
-1. Connect sensors to ESP32/Arduino
-2. Upload the firmware code
-3. Power the system
-4. Monitor output via serial console or alert system
+---
 
-## Future Improvements
-- Cloud-based alert system
-- Mobile app integration
-- Improved crash classification models
+## 🚀 How to Run
 
-Contributions are welcome! Feel free to open issues or submit pull requests to improve the project.
+### Single Unit Mode (`code.ino`)
+
+1. Wire components per the Hardware Setup table above — **include the 330Ω MOSFET gate resistor**
+2. Install libraries: `MPU6050`, `TinyGPS++`, `TwilioESP`
+3. Configure your Twilio credentials in the sketch
+4. Upload `code.ino` to the ESP32
+5. Open Serial Monitor at **115200 baud**
+
+### Version 2 Mode — Dual Unit (`version2/`)
+
+**Wearable Unit:**
+1. Flash `version2/wearable.ino` onto the wearable ESP32
+2. Power it on and note its MAC address
+
+**Vehicle Unit:**
+1. Flash `version2/vehicle.ino` onto the vehicle ESP32
+2. Paste the wearable's MAC address into the ESP-NOW peer config in the sketch
+3. Power the vehicle unit
+4. Monitor output via Serial Monitor at **115200 baud**
+
+---
+
+## 🔮 Future Improvements
+
+- Cloud dashboard for live tracking
+- AI-based crash classification
+- Mobile app integration (live alerts + GPS map)
+- Battery-backed fail-safe system
+
+---
+
+## 🤝 Contributions
+
+Pull requests and improvements are welcome. Focus areas: sensor calibration, communication reliability, power optimization, and safety enhancements.
