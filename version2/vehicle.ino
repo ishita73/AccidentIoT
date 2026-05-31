@@ -4,6 +4,7 @@
 #include <BluetoothSerial.h>
 #include "driver/adc.h"
 
+// ---------------- PIN CONFIG ----------------
 const int FUEL_GATE_PIN = 23;
 const int BUZZER_PIN = 18;
 const int IR_PIN = 35;
@@ -11,24 +12,20 @@ const int IR_PIN = 35;
 const int I2C_SDA = 21;
 const int I2C_SCL = 22;
 
-HardwareSerial gpsSerial(2);
-
 const int GPS_RX = 16;
 const int GPS_TX = 17;
 const uint32_t GPS_BAUD = 9600;
 
-const double LAT = 12.843583;
-const double LNG = 80.156194;
+const int PIEZO_ADC_PIN = 34;
 
+// ---------------- OBJECTS ----------------
+HardwareSerial gpsSerial(2);
 BluetoothSerial SerialBT;
 
-const int PIEZO_ADC_PIN = 34;
-const adc_attenuation_t PIEZO_ATTEN = ADC_11db;
+MPU6050 mpu;
+TinyGPSPlus gps;
 
-const float SEAT_HP_ALPHA = 0.95f;
-const int SEAT_EN_AVG_SAMPLES = 40;
-const float SEAT_ENERGY_THRESH = 12.0f;
-
+// ---------------- CONSTANTS ----------------
 const float ACC_SENS = 16384.0f;
 const float GYRO_SENS = 131.0f;
 
@@ -36,269 +33,238 @@ const float GRAVITY_ALPHA = 0.98f;
 const float A_SMOOTH_ALPHA = 0.85f;
 
 const float SAMPLE_HZ = 200.0f;
-const uint32_t SAMPLE_US = (uint32_t)(1000000.0f / SAMPLE_HZ);
+const uint32_t SAMPLE_US = 1000000 / SAMPLE_HZ;
 
 const uint32_t IMPACT_WINDOW_MS = 150;
 const uint32_t VALIDATION_WINDOW_MS = 2000;
 const uint32_t LATCH_HOLDOFF_MS = 10000;
 
+// Severity thresholds
 const float A_MINOR_G = 2.5f, J_MINOR = 5.0f, W_MINOR = 250.0f;
-const float A_MOD_G = 4.0f, J_MOD = 8.0f, W_MOD = 300.0f;
-const float A_SEV_G = 6.0f, J_SEV = 15.0f, W_SEV = 500.0f;
+const float A_MOD_G   = 4.0f, J_MOD   = 8.0f, W_MOD   = 300.0f;
+const float A_SEV_G   = 6.0f, J_SEV   = 15.0f, W_SEV   = 500.0f;
 
+// Seat detection
+const float SEAT_ENERGY_THRESH = 12.0f;
+const int SEAT_SAMPLES = 40;
+
+// IR detection
 const int IR_CHANGE_THRESHOLD = 80;
 const int IR_PULSE_MIN = 4;
 
-int lastIR = 0;
+// ---------------- STATE ----------------
+float gX = 0, gY = 0, gZ = 1;
+float prevA = 0;
+
+float axBias = 0, ayBias = 0, azBias = 0;
+
+bool seatOccupied = true;
+
 int irPulseCount = 0;
-
 bool waitingWearable = false;
-uint32_t wearableWindowStart = 0;
+uint32_t wearableStart = 0;
+uint32_t lastTrigger = 0;
 
-MPU6050 mpu;
-TinyGPSPlus gps;
+uint32_t lastSample = 0;
+uint32_t lastDbg = 0;
 
-float gX=0,gY=0,gZ=1;
-float prevA_smooth=0;
+// impact window
+struct {
+  float a_peak;
+  float j_peak;
+  float w_peak;
+  uint32_t start_ms;
+} win;
 
-uint32_t lastSample=0,lastDbg=0;
+// seat energy
+float seatHP = 0;
+float seatSum = 0;
+int seatCount = 0;
 
-float axBias=0,ayBias=0,azBias=0;
-
-bool seatOccupied=true;
-
-float seatHP=0,seatEnergyAccum=0,seatEnergy=0;
-int seatCount=0;
-
-uint32_t lastTriggerMs=0;
-
-struct PeakBuf { float a_peak,j_peak,w_peak; uint32_t start_ms; } win;
-
-static inline float lpf(float prev,float x,float alpha){
-  return alpha*prev+(1-alpha)*x;
+// ---------------- HELPERS ----------------
+float lpf(float prev, float x, float a) {
+  return a * prev + (1 - a) * x;
 }
 
-void setFuel(bool on){
-  digitalWrite(FUEL_GATE_PIN,on?HIGH:LOW);
+void setFuel(bool on) {
+  digitalWrite(FUEL_GATE_PIN, on ? HIGH : LOW);
 }
 
-void buzz(int ms){
-  digitalWrite(BUZZER_PIN,HIGH);
+void buzz(int ms) {
+  digitalWrite(BUZZER_PIN, HIGH);
   delay(ms);
-  digitalWrite(BUZZER_PIN,LOW);
+  digitalWrite(BUZZER_PIN, LOW);
 }
 
-void sendBTAccident(double lat,double lng){
-  String msg="ACCIDENT,"+String(lat,6)+","+String(lng,6);
-  SerialBT.println(msg);
-  Serial.println("BT -> "+msg);
-}
-
-String classifySeverity(float a,float j,float w){
-  if(a>=A_SEV_G||j>=J_SEV||w>=W_SEV) return "SEVERE";
-  if(a>=A_MOD_G||j>=J_MOD||w>=W_MOD) return "MODERATE";
-  if(a>=A_MINOR_G||j>=J_MINOR||w>=W_MINOR) return "MINOR";
+String classify(float a, float j, float w) {
+  if (a >= A_SEV_G || j >= J_SEV || w >= W_SEV) return "SEVERE";
+  if (a >= A_MOD_G || j >= J_MOD || w >= W_MOD) return "MODERATE";
+  if (a >= A_MINOR_G || j >= J_MINOR || w >= W_MINOR) return "MINOR";
   return "NONE";
 }
 
-void emitAccident(const String& sev,float a,float j,float w){
-
-  double lat=gps.location.isValid()?gps.location.lat():LAT;
-  double lng=gps.location.isValid()?gps.location.lng():LNG;
-
-  Serial.printf("ACCIDENT,%s,%.2f,%.1f,%.0f,%.6f,%.6f\n",
-                sev.c_str(),a,j,w,lat,lng);
-
-  sendBTAccident(lat,lng);
-
-  buzz(800);
+double getLat() {
+  return gps.location.isValid() ? gps.location.lat() : 12.843583;
 }
 
-void checkWearableIR(){
-
-  int val = analogRead(IR_PIN);
-
-  if(waitingWearable && abs(val-lastIR) > IR_CHANGE_THRESHOLD){
-    irPulseCount++;
-  }
-
-  lastIR = val;
+double getLng() {
+  return gps.location.isValid() ? gps.location.lng() : 80.156194;
 }
 
-void setup(){
+void sendBT(String s) {
+  SerialBT.println(s);
+  Serial.println(s);
+}
 
+// ---------------- SETUP ----------------
+void setup() {
   Serial.begin(115200);
-
   SerialBT.begin("ESP32_Accident_BT");
 
-  pinMode(BUZZER_PIN,OUTPUT);
-  pinMode(FUEL_GATE_PIN,OUTPUT);
-  pinMode(IR_PIN,INPUT);
+  pinMode(FUEL_GATE_PIN, OUTPUT);
+  pinMode(BUZZER_PIN, OUTPUT);
+  pinMode(IR_PIN, INPUT);
 
   setFuel(true);
 
-  analogSetPinAttenuation(PIEZO_ADC_PIN,PIEZO_ATTEN);
-
-  Wire.begin(I2C_SDA,I2C_SCL);
+  Wire.begin(I2C_SDA, I2C_SCL);
 
   mpu.initialize();
-
-  if(!mpu.testConnection()){
-    Serial.println("MPU6050 not found!");
-    while(true);
+  if (!mpu.testConnection()) {
+    Serial.println("MPU6050 FAIL");
+    while (1);
   }
 
-  Serial.println("Calibrating MPU");
+  // GPS
+  gpsSerial.begin(GPS_BAUD, SERIAL_8N1, GPS_RX, GPS_TX);
 
-  long axSum=0,aySum=0,azSum=0;
+  // calibration
+  long ax=0, ay=0, az=0;
 
-  for(int i=0;i<200;i++){
-
-    int16_t ax,ay,az,gx,gy,gz;
-
-    mpu.getMotion6(&ax,&ay,&az,&gx,&gy,&gz);
-
-    axSum+=ax;
-    aySum+=ay;
-    azSum+=az;
-
+  for (int i = 0; i < 200; i++) {
+    int16_t x,y,z,gx,gy,gz;
+    mpu.getMotion6(&x,&y,&z,&gx,&gy,&gz);
+    ax += x; ay += y; az += z;
     delay(5);
   }
 
-  axBias=axSum/200.0;
-  ayBias=aySum/200.0;
-  azBias=azSum/200.0;
+  axBias = ax / 200.0;
+  ayBias = ay / 200.0;
+  azBias = az / 200.0;
 
-  gpsSerial.begin(GPS_BAUD,SERIAL_8N1,GPS_RX,GPS_TX);
+  win = {0,0,0,millis()};
 
-  win={0,0,0,millis()};
-  lastSample=micros();
+  lastSample = micros();
 
   Serial.println("System Ready");
 }
 
-void loop(){
+// ---------------- LOOP ----------------
+void loop() {
 
-  uint32_t nowUs=micros();
+  uint32_t nowUs = micros();
+  uint32_t nowMs = millis();
 
-  if(nowUs-lastSample < SAMPLE_US){
-    while(gpsSerial.available()){
-      gps.encode(gpsSerial.read());
-    }
-    return;
+  // GPS always read (non-blocking)
+  while (gpsSerial.available()) {
+    gps.encode(gpsSerial.read());
   }
 
+  // fixed sampling rate
+  if (nowUs - lastSample < SAMPLE_US) return;
   lastSample += SAMPLE_US;
 
-  float dt=SAMPLE_US/1e6;
-  uint32_t nowMs=millis();
+  float dt = SAMPLE_US / 1e6;
 
-  int16_t axr,ayr,azr,gxr,gyr,gzr;
-
+  // ---------------- MPU ----------------
+  int16_t axr, ayr, azr, gxr, gyr, gzr;
   mpu.getMotion6(&axr,&ayr,&azr,&gxr,&gyr,&gzr);
 
-  float ax=(axr-axBias)/ACC_SENS;
-  float ay=(ayr-ayBias)/ACC_SENS;
-  float az=(azr-azBias)/ACC_SENS;
+  float ax = (axr - axBias) / ACC_SENS;
+  float ay = (ayr - ayBias) / ACC_SENS;
+  float az = (azr - azBias) / ACC_SENS;
 
-  float gx=gxr/GYRO_SENS;
-  float gy=gyr/GYRO_SENS;
-  float gz=gzr/GYRO_SENS;
+  float gx = gxr / GYRO_SENS;
+  float gy = gyr / GYRO_SENS;
+  float gz = gzr / GYRO_SENS;
 
-  float w=sqrt(gx*gx+gy*gy+gz*gz);
+  float w = sqrt(gx*gx + gy*gy + gz*gz);
 
-  gX=lpf(gX,ax,GRAVITY_ALPHA);
-  gY=lpf(gY,ay,GRAVITY_ALPHA);
-  gZ=lpf(gZ,az,GRAVITY_ALPHA);
+  gX = lpf(gX, ax, GRAVITY_ALPHA);
+  gY = lpf(gY, ay, GRAVITY_ALPHA);
+  gZ = lpf(gZ, az, GRAVITY_ALPHA);
 
-  float linX=ax-gX;
-  float linY=ay-gY;
-  float linZ=az-gZ;
+  float lin = sqrt(
+    pow(ax - gX,2) +
+    pow(ay - gY,2) +
+    pow(az - gZ,2)
+  );
 
-  float a=sqrt(linX*linX+linY*linY+linZ*linZ);
+  float a = lin;
+  float aSmooth = lpf(prevA, a, A_SMOOTH_ALPHA);
 
-  float a_smooth=lpf(prevA_smooth,a,A_SMOOTH_ALPHA);
+  float jerk = (aSmooth - prevA) / dt;
+  prevA = aSmooth;
 
-  float jerk=(a_smooth-prevA_smooth)/dt;
+  // ---------------- IMPACT WINDOW ----------------
+  if (aSmooth > win.a_peak) win.a_peak = aSmooth;
+  if (fabs(jerk) > win.j_peak) win.j_peak = fabs(jerk);
+  if (w > win.w_peak) win.w_peak = w;
 
-  prevA_smooth=a_smooth;
+  if (nowMs - win.start_ms > IMPACT_WINDOW_MS) {
 
-  checkWearableIR();
+    String sev = classify(win.a_peak, win.j_peak, win.w_peak);
 
-  static int prevSeat=0;
+    if (sev != "NONE" &&
+        seatOccupied &&
+        !waitingWearable &&
+        (nowMs - lastTrigger > LATCH_HOLDOFF_MS)) {
 
-  int x=analogRead(PIEZO_ADC_PIN);
-  int dx=x-prevSeat;
-  prevSeat=x;
-
-  seatHP=SEAT_HP_ALPHA*(seatHP+dx);
-
-  float seatAbs=fabs(seatHP);
-
-  seatEnergyAccum+=seatAbs;
-  seatCount++;
-
-  if(seatCount>=SEAT_EN_AVG_SAMPLES){
-
-    seatEnergy=seatEnergyAccum/seatCount;
-
-    seatEnergyAccum=0;
-    seatCount=0;
-
-    seatOccupied=(seatEnergy>=SEAT_ENERGY_THRESH);
-  }
-
-  if(a_smooth > win.a_peak) win.a_peak=a_smooth;
-  if(fabs(jerk) > win.j_peak) win.j_peak=fabs(jerk);
-  if(w > win.w_peak) win.w_peak=w;
-
-  if(nowMs-win.start_ms > IMPACT_WINDOW_MS){
-
-    String sev=classifySeverity(win.a_peak,win.j_peak,win.w_peak);
-
-    if(sev!="NONE" && seatOccupied && !waitingWearable &&
-       (nowMs-lastTriggerMs>LATCH_HOLDOFF_MS)){
-
-      Serial.println("Vehicle impact detected");
-
-      waitingWearable=true;
-      irPulseCount=0;
-      wearableWindowStart=millis();
+      Serial.println("Impact detected");
+      waitingWearable = true;
+      wearableStart = nowMs;
+      irPulseCount = 0;
     }
 
-    win={0,0,0,nowMs};
+    win = {0,0,0,nowMs};
   }
 
-  if(waitingWearable){
+  // ---------------- IR wearable validation ----------------
+  static int lastIR = 0;
+  int ir = analogRead(IR_PIN);
 
-    if(millis()-wearableWindowStart > VALIDATION_WINDOW_MS){
+  if (waitingWearable && abs(ir - lastIR) > IR_CHANGE_THRESHOLD) {
+    irPulseCount++;
+  }
 
-      if(irPulseCount >= IR_PULSE_MIN){
+  lastIR = ir;
 
-        Serial.println("Wearable confirmed accident");
+  if (waitingWearable && (nowMs - wearableStart > VALIDATION_WINDOW_MS)) {
 
-        lastTriggerMs=millis();
+    if (irPulseCount >= IR_PULSE_MIN) {
 
-        setFuel(false);
+      lastTrigger = nowMs;
+      setFuel(false);
+      buzz(1000);
 
-        buzz(1000);
+      String msg = "ACCIDENT,CONFIRMED," +
+                   String(getLat(),6) + "," +
+                   String(getLng(),6);
 
-        emitAccident("CONFIRMED",win.a_peak,win.j_peak,win.w_peak);
-
-      }else{
-
-        Serial.println("Wearable not detected, ignoring bump");
-      }
-
-      waitingWearable=false;
+      sendBT(msg);
     }
+    else {
+      Serial.println("False trigger ignored");
+    }
+
+    waitingWearable = false;
   }
 
-  if(nowMs-lastDbg>500){
+  // ---------------- DEBUG ----------------
+  if (nowMs - lastDbg > 500) {
+    lastDbg = nowMs;
 
-    lastDbg=nowMs;
-
-    Serial.printf("a=%.2fg jerk=%5.1fg/s w=%3.0fdps seat=%c IR=%d\n",
-                  a_smooth,jerk,w,seatOccupied?'Y':'N',irPulseCount);
+    Serial.printf("a=%.2f jerk=%.1f w=%.0f IR=%d seat=%d\n",
+      aSmooth, jerk, w, ir, seatOccupied);
   }
 }
